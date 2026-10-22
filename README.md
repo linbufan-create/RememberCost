@@ -2,14 +2,15 @@
 
 一个可以让 DeepSeek Harness 在**下方数据栏**显示剩余余额、今日消费和本会话消耗的插件。
 
-- **数据栏胶囊**：聊天输入框下方显示「记账 今日已用 · 余额 · 本会话」，
-  点开可看本月、本会话消耗、最近观测与部分数据说明。
+- **数据栏胶囊**：聊天输入框下方显示「记账 今日已用 · 余额 · 上轮 · 本会话」，
+  点开可看本月、上一轮对话、本会话累计、最近观测与部分数据说明。
 - **设置页看板**：设置 → 记账本，指标卡、按日柱状趋势、逐日明细、余额校正、CSV 导出。
 - 记账内核移植自 [DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)
   的 `lib/accounting.mjs`（MIT）：定点金额、余额观测、按账户分本、余额校正、部分数据标记。
 - 看板显示参考 [dsh-cost-tracker](https://github.com/Angelyeye/dsh-cost-tracker) 的花费统计页。
-- 「本会话」消耗来自同进程的 dsh-cost-tracker（`POST /api/cost-tracker/summary`）；
-  没装该插件时这一段自动隐藏，不影响余额记账。
+- 「上轮」「本会话」消耗来自同进程的 dsh-cost-tracker：
+  `summary` 给会话累计，宿主再监听 DSH 的 `turn/start` / `turn/end`，
+  从花费统计的逐条记录里切出每一轮的费用；没装该插件时这两段自动隐藏，不影响余额记账。
 
 ## 口径
 
@@ -41,8 +42,14 @@ DeepSeek 的余额接口不只有总额，还给了「充值余额（`topped_up_
 
 - 账本：`$DSH_HOME/storages/ledger-accounting.json`（可用 `DSH_LEDGER_FILE` 覆盖）。
   原子写入；文件损坏时改名备份为 `.corrupt-<时间戳>.bak` 后重建，不覆盖坏数据。
+- 上一轮派生缓存：`$DSH_HOME/storages/ledger-last-turns.json`（与账本同目录），
+  只存每个会话最近一轮的费用/调用数/时间，便于重启后继续显示。
+- 上一轮的切法：监听 `session/event` 的 `turn/start` / `turn/end`，读取花费统计的
+  `cost-tracker-records.json`，汇总该时间窗内同一 `sessionId` 的调用费用；
+  会话标题生成（`purpose: "session-title"`）不计入。插件中途加载或宿主重启时，
+  会从会话日志里回找同一轮的 `turn/start` 时间，所以不会漏掉当前这一轮。
 - 后台每 60 秒自动观测一次；看板页也提供「立即记账」和自动记账开关。
-- HTTP：`POST /api/dsh-ledger/{overview|refresh|reconcile|export|settings}`。
+- HTTP：`POST /api/dsh-ledger/{overview|refresh|reconcile|export|last-turn|settings}`。
 - Agent 工具：
   - `ledger_status`：当前余额、今日已用、观测状态、账本列表；
   - `ledger_days`：逐日明细（区间、部分数据、待核对）；

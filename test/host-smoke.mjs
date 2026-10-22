@@ -13,7 +13,9 @@ import { observeBalance } from '../accounting.mjs'
 
 const dir = mkdtempSync(join(tmpdir(), 'dsh-ledger-smoke-'))
 const dataFile = join(dir, 'ledger.json')
+const costFile = join(dir, 'cost-records.json')
 process.env.DSH_LEDGER_FILE = dataFile
+process.env.DSH_LEDGER_COST_FILE = costFile
 
 const now = Date.now()
 const seed = {
@@ -29,11 +31,15 @@ writeFileSync(dataFile, JSON.stringify(seed), 'utf8')
 const cleanups = []
 const routes = new Map()
 const tools = new Map()
+const eventHandlers = new Map()
 const ctx = {
   effect(fn, label) {
     cleanups.push({ label, dispose: fn() })
   },
-  on() { return () => {} },
+  on(name, handler) {
+    eventHandlers.set(name, handler)
+    return () => {}
+  },
   get(name) {
     if (name === 'credentials') return { resolve: async () => ({ value: 'smoke-key' }) }
     if (name === 'deepseekAccount') return null
@@ -142,6 +148,31 @@ const okTool = await tools.get('ledger_reconcile').execute({
 })
 assert.equal(okTool.ok, true)
 assert.equal(okTool.amount, 7)
+
+// 上一轮对话：turn/end 时从花费统计的逐条记录里切出该轮
+const turnStart = Date.now() - 60000
+writeFileSync(costFile, JSON.stringify({
+  details: [
+    { ts: turnStart + 100, sessionId: 'session-smoke', cost: 0.0123, purpose: '' },
+    { ts: turnStart + 200, sessionId: 'session-smoke', cost: 0.0001, purpose: 'session-title' },
+    { ts: turnStart + 300, sessionId: 'session-other', cost: 9, purpose: '' },
+  ],
+}), 'utf8')
+const fakeSession = {
+  id: 'session-smoke',
+  snapshotEvents: () => [{ type: 'turn/start', time: turnStart, data: { turn: 3 } }],
+}
+const onSessionEvent = eventHandlers.get('session/event')
+assert.equal(typeof onSessionEvent, 'function')
+onSessionEvent(fakeSession, { type: 'turn/end', time: Date.now(), data: { turn: 3 } })
+
+const lastTurn = await call('last-turn', { sessionId: 'session-smoke' })
+assert.equal(lastTurn.body.ok, true)
+assert.equal(lastTurn.body.lastTurn.cost, 0.0123)
+assert.equal(lastTurn.body.lastTurn.calls, 1)
+assert.equal(lastTurn.body.lastTurn.turn, 3)
+const otherTurn = await call('last-turn', { sessionId: 'session-other' })
+assert.equal(otherTurn.body.lastTurn, null)
 
 for (const { dispose } of cleanups) {
   if (typeof dispose === 'function') dispose()

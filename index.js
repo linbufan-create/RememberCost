@@ -26,7 +26,7 @@ import {
   reconcileBalance,
 } from './accounting.mjs'
 
-const VERSION = '1.1.0'
+const VERSION = '1.1.1'
 
 /** 观测周期：与来源的「小鲸鱼记账」相近；partialDay 的缺口阈值是 10 分钟。 */
 const OBSERVE_INTERVAL_MS = 60 * 1000
@@ -35,6 +35,10 @@ const ACCOUNT_TIMEOUT_MS = 12000
 
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const DATA_FILE = process.env.DSH_LEDGER_FILE || join(DSH_HOME, 'storages', 'ledger-accounting.json')
+/** 花费统计的逐条调用记录（只读；上一轮对话的金额从这里按时间窗汇总）。 */
+const COST_RECORDS_FILE = process.env.DSH_LEDGER_COST_FILE || join(DSH_HOME, 'storages', 'cost-tracker-records.json')
+/** 上一轮对话的派生缓存，和账本放在同一目录。 */
+const LAST_TURNS_FILE = process.env.DSH_LEDGER_TURNS_FILE || join(dirname(DATA_FILE), 'ledger-last-turns.json')
 const BALANCE_URL = 'https://api.deepseek.com/user/balance'
 
 function textOf(err) {
@@ -166,6 +170,123 @@ export function apply(ctx) {
       return false
     }
   }
+
+  // ---------- 上一轮对话消耗 ----------
+  // 花费统计（dsh-cost-tracker）按每次调用落盘，但 summary 只有「本会话累计」，
+  // 没有轮次。这里监听 DSH 的 turn/start / turn/end，把该轮时间窗内的调用费用
+  // 汇总成「上一轮对话」；读不到记录时静默跳过，不影响余额记账。
+  let lastTurns = {}
+  const turnStarts = new Map()
+
+  function loadLastTurns() {
+    try {
+      if (!existsSync(LAST_TURNS_FILE)) return
+      const parsed = JSON.parse(ioRetry(() => readFileSync(LAST_TURNS_FILE, 'utf8')))
+      if (!parsed || typeof parsed !== 'object') return
+      for (const sid of Object.keys(parsed)) {
+        const v = parsed[sid]
+        if (!v || !Number.isFinite(Number(v.cost))) continue
+        lastTurns[sid] = {
+          cost: Number(v.cost),
+          calls: Number(v.calls) || 0,
+          at: Number(v.at) || 0,
+          startAt: Number(v.startAt) || 0,
+          turn: Number(v.turn) || 0,
+        }
+      }
+    } catch (err) {
+      // 派生缓存损坏不影响主账本，直接忽略。
+    }
+  }
+
+  function saveLastTurns() {
+    const entries = Object.entries(lastTurns).sort((a, b) => (Number(b[1].at) || 0) - (Number(a[1].at) || 0))
+    if (entries.length > 200) lastTurns = Object.fromEntries(entries.slice(0, 200))
+    const temp = LAST_TURNS_FILE + '.tmp-' + process.pid
+    try {
+      ioRetry(() => mkdirSync(dirname(LAST_TURNS_FILE), { recursive: true }))
+      ioRetry(() => writeFileSync(temp, JSON.stringify(lastTurns), 'utf8'))
+      ioRetry(() => renameSync(temp, LAST_TURNS_FILE))
+    } catch (err) {
+      try { if (existsSync(temp)) ioRetry(() => unlinkSync(temp)) } catch (cleanupErr) { /* ignore */ }
+      console.error('[dsh-ledger] 上一轮记录保存失败：' + textOf(err))
+    }
+  }
+
+  function readCostRecords() {
+    try {
+      const parsed = JSON.parse(ioRetry(() => readFileSync(COST_RECORDS_FILE, 'utf8')))
+      return Array.isArray(parsed && parsed.details) ? parsed.details : null
+    } catch (err) {
+      return null
+    }
+  }
+
+  function computeTurnCost(sessionId, startAt, endAt) {
+    const records = readCostRecords()
+    if (!records) return null
+    let units = 0
+    let calls = 0
+    for (const record of records) {
+      if (!record || String(record.sessionId || '') !== sessionId) continue
+      const ts = Number(record.ts)
+      if (!Number.isFinite(ts) || ts < startAt || ts > endAt) continue
+      // 会话标题生成是后台开销，不算进「这一轮对话」。
+      if (record.purpose === 'session-title') continue
+      const cost = Number(record.cost)
+      if (!Number.isFinite(cost) || cost <= 0) continue
+      units += Math.round(cost * 1e8)
+      calls += 1
+    }
+    if (!calls) return null
+    return { cost: units / 1e8, calls, at: endAt, startAt }
+  }
+
+  /**
+   * 插件可能是在某一轮进行到一半时才加载的（更新后重载、宿主重启等）。
+   * 这时 turnStarts 里没有起点，就从会话日志里回找同一 turn 的 turn/start 时间。
+   */
+  function turnStartFromSession(session, turn) {
+    try {
+      const events = session && typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : []
+      for (let i = events.length - 1; i >= 0; i -= 1) {
+        const ev = events[i]
+        if (!ev || ev.type !== 'turn/start') continue
+        const evTurn = Number(ev.data && ev.data.turn)
+        if (Number.isFinite(turn) && Number.isFinite(evTurn) && evTurn !== turn) continue
+        const time = Number(ev.time)
+        if (Number.isFinite(time)) return time
+      }
+    } catch (err) {
+      // 会话对象形状变化时静默放弃，不影响会话本身。
+    }
+    return 0
+  }
+
+  loadLastTurns()
+
+  ctx.effect(() => ctx.on('session/event', (session, event) => {
+    try {
+      const sid = session && session.id ? String(session.id) : ''
+      if (!sid || !event || !event.type) return
+      if (event.type === 'turn/start') {
+        turnStarts.set(sid, Date.now())
+        return
+      }
+      if (event.type !== 'turn/end') return
+      const turnNo = Number(event.data && event.data.turn)
+      let startAt = turnStarts.get(sid)
+      turnStarts.delete(sid)
+      if (!startAt) startAt = turnStartFromSession(session, turnNo)
+      if (!startAt) return
+      const result = computeTurnCost(sid, startAt, Date.now())
+      if (!result) return
+      lastTurns[sid] = { ...result, turn: Number.isFinite(turnNo) ? turnNo : 0 }
+      saveLastTurns()
+    } catch (err) {
+      // 观察者失败不能影响会话日志追加。
+    }
+  }), 'dsh-ledger: turn cost tracking')
 
   // ---------- 余额来源 ----------
   /**
@@ -465,6 +586,11 @@ export function apply(ctx) {
       return { ...buildOverview({ days: args.days, scope: args.scope }), reconciled: result.reconciled }
     },
     export: async (args) => buildCsv(args),
+    'last-turn': async (args) => {
+      const sid = String((args && args.sessionId) || '')
+      if (!sid) return { ok: false, error: '缺少 sessionId' }
+      return { ok: true, sessionId: sid, lastTurn: lastTurns[sid] || null }
+    },
     settings: async (args) => {
       const led = loadLedger()
       if (typeof args.autoObserve === 'boolean') {

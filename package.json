@@ -1,8 +1,8 @@
 {
   "name": "dsh-ledger",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
-  "description": "DSH 插件：按 DeepSeek 余额观测记账，数据栏显示今日消费/余额/本会话消耗，设置页看板（趋势 / 明细 / 余额校正 / CSV）",
+  "description": "DSH 插件：按 DeepSeek 余额观测记账，数据栏显示今日消费/余额/上一轮/本会话，设置页看板（趋势 / 明细 / 余额校正 / CSV）",
   "type": "module",
   "main": "index.js",
   "icon": "./icon.svg",

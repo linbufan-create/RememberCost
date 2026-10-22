@@ -40,6 +40,11 @@ window.__ModuleLoader__.load({
       if (n !== 0 && Math.abs(n) < 0.01) return n.toFixed(4)
       return n.toFixed(2)
     }
+    // token 计费（本会话 / 上一轮）沿用花费统计的四位小数口径。
+    function fmtCost(value) {
+      const n = Number(value)
+      return Number.isFinite(n) ? n.toFixed(4) : '--'
+    }
     function timeOf(ts) {
       if (!ts) return '--'
       return new Date(Number(ts) + 8 * 3600000).toISOString().slice(11, 16)
@@ -264,6 +269,7 @@ window.__ModuleLoader__.load({
       const sessionId = props && props.sessionId ? String(props.sessionId) : ''
       const [data, setData] = useState(null)
       const [session, setSession] = useState(null)
+      const [lastTurn, setLastTurn] = useState(null)
       const [err, setErr] = useState('')
       const [open, setOpen] = useState(false)
       const wrapRef = React.useRef(null)
@@ -299,6 +305,27 @@ window.__ModuleLoader__.load({
         return () => { alive = false; clearInterval(timer) }
       }, [sessionId])
 
+      // 上一轮对话：宿主在 turn/end 时切好时间窗并汇总，这里 10 秒取一次。
+      useEffect(() => {
+        if (!sessionId) return undefined
+        let alive = true
+        const load = () => fetch('/api/dsh-ledger/last-turn', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((v) => {
+            if (!alive || !v || v.ok === false) return
+            if (v.lastTurn && Number.isFinite(Number(v.lastTurn.cost))) setLastTurn(v.lastTurn)
+            else setLastTurn(null)
+          })
+          .catch(() => {})
+        load()
+        const timer = setInterval(load, 10000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [sessionId])
+
       useEffect(() => {
         if (!open) return undefined
         const onDoc = (ev) => {
@@ -314,10 +341,13 @@ window.__ModuleLoader__.load({
       const sessionCost = session ? Number(session.sessionCost) : null
       const sessionSub = session ? Number(session.sessionSub) || 0 : 0
       const sessionCalls = session ? Number(session.sessionCalls) || 0 : 0
+      const lastCost = lastTurn ? Number(lastTurn.cost) : null
+      const lastCalls = lastTurn ? Number(lastTurn.calls) || 0 : 0
       const needs = !!(today && today.needsReview)
       const title = data
         ? '今日已用 ¥' + fmtMoney(amount) + ' · 当前余额 ' + (balance === null ? '--' : '¥' + fmtMoney(balance))
-          + (sessionCost !== null ? ' · 本会话消耗 ¥' + fmtMoney(sessionCost) : '')
+          + (lastCost !== null ? ' · 上一轮 ¥' + fmtCost(lastCost) : '')
+          + (sessionCost !== null ? ' · 本会话 ¥' + fmtCost(sessionCost) : '')
         : '记账本：还没有观测数据'
 
       return e('div', { className: 'ledg-dock-wrap', ref: wrapRef },
@@ -334,21 +364,29 @@ window.__ModuleLoader__.load({
           e('span', { className: 'ledg-dock-sep' }, '·'),
           e('span', null, '余额 '),
           e('b', null, balance === null ? '--' : '¥' + fmtMoney(balance)),
+          lastCost !== null ? e('span', { className: 'ledg-dock-sep' }, '·') : null,
+          lastCost !== null ? e('span', null, '上轮 ') : null,
+          lastCost !== null ? e('b', null, '¥' + fmtCost(lastCost)) : null,
           sessionCost !== null ? e('span', { className: 'ledg-dock-sep' }, '·') : null,
           sessionCost !== null ? e('span', null, '本会话 ') : null,
-          sessionCost !== null ? e('b', null, '¥' + fmtMoney(sessionCost)) : null),
+          sessionCost !== null ? e('b', null, '¥' + fmtCost(sessionCost)) : null),
         open
           ? e('div', { className: 'ledg-dock-pop' },
             e('div', { className: 'ledg-dock-row' }, e('span', null, '今日已用'), e('b', null, amount === null ? '--' : '¥' + fmtMoney(amount))),
             e('div', { className: 'ledg-dock-row' }, e('span', null, '本月已用'), e('b', null, '¥' + fmtMoney(data ? data.totals.month : null))),
             e('div', { className: 'ledg-dock-row' }, e('span', null, '当前余额'), e('b', null, balance === null ? '--' : '¥' + fmtMoney(balance))),
+            e('div', { className: 'ledg-dock-row' },
+              e('span', null, '上一轮对话'),
+              e('b', null, lastCost !== null
+                ? '¥' + fmtCost(lastCost) + (lastCalls ? ' · ' + lastCalls + ' 次' : '')
+                : '--（本轮结束后出现）')),
             sessionCost !== null
               ? e('div', { className: 'ledg-dock-row' },
-                e('span', null, '本会话消耗'),
-                e('b', null, '¥' + fmtMoney(sessionCost) + (sessionCalls ? ' · ' + sessionCalls + ' 次调用' : '')))
+                e('span', null, '本会话累计'),
+                e('b', null, '¥' + fmtCost(sessionCost) + (sessionCalls ? ' · ' + sessionCalls + ' 次调用' : '')))
               : null,
             sessionSub > 0
-              ? e('div', { className: 'ledg-dock-row' }, e('span', null, '本会话订阅等效'), e('b', null, '¥' + fmtMoney(sessionSub)))
+              ? e('div', { className: 'ledg-dock-row' }, e('span', null, '本会话订阅等效'), e('b', null, '¥' + fmtCost(sessionSub)))
               : null,
             e('div', { className: 'ledg-dock-row' }, e('span', null, '最近观测'), e('b', null, dateTimeOf(data && data.status && data.status.lastSuccessAt))),
             e('div', { className: 'ledg-dock-note' },
@@ -357,7 +395,7 @@ window.__ModuleLoader__.load({
                 : '今天还没有观测到余额'),
             needs ? e('div', { className: 'ledg-dock-err' }, '余额有上升尚未核对，可在设置 → 记账本里校正。') : null,
             err ? e('div', { className: 'ledg-dock-err' }, err) : null,
-            e('div', { className: 'ledg-dock-note' }, '「本会话」是花费统计的 token 计费；「今日」是余额观测。完整看板：设置 → 记账本'))
+            e('div', { className: 'ledg-dock-note' }, '「上轮」= 最近结束的一轮对话；「本会话」= 整段累计；「今日」= 余额观测。完整看板：设置 → 记账本'))
           : null)
     }
 
