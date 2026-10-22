@@ -1,0 +1,6 @@
+# dsh-ledger bundle patch：把宿主插件插入当前 profile。
+#
+# row id 用 `dsh-ledger`，与客户端 ModuleLoader 的注册名（= 包名）保持一致。
+- insert:
+    - id: dsh-ledger
+      name: dsh-ledger

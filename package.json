@@ -1,0 +1,58 @@
+{
+  "name": "dsh-ledger",
+  "version": "1.1.0",
+  "private": true,
+  "description": "DSH 插件：按 DeepSeek 余额观测记账，数据栏显示今日消费/余额/本会话消耗，设置页看板（趋势 / 明细 / 余额校正 / CSV）",
+  "type": "module",
+  "main": "index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./accounting": "./accounting.mjs",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "accounting.mjs",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/accounting.test.mjs && node test/host-smoke.mjs && node test/host-wallet-smoke.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "ledger",
+    "accounting",
+    "balance"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/linbufan-create/RememberCost.git"
+  },
+  "homepage": "https://github.com/linbufan-create/RememberCost#readme",
+  "bugs": {
+    "url": "https://github.com/linbufan-create/RememberCost/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Ledger",
+    "description": "Daily spend book built from DeepSeek balance observations (Beijing calendar days), with recharge-aware reconciliation, per-day details and CSV export."
+  }
+}
