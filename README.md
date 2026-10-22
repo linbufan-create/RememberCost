@@ -1,0 +1,2 @@
+# RememberCost
+一个可以让deepseek在下方GUI显示剩余余额的插件
